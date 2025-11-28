@@ -1,5 +1,8 @@
 import argparse
+import base64
+import io
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -13,18 +16,17 @@ import pyarrow.parquet as pq
 
 # ---------- Image helpers ----------
 
-def load_image_bytes(image_path: Path) -> Optional[bytes]:
-    """Load image and return PNG-encoded RGB bytes. Return None on failure."""
-    try:
-        with Image.open(image_path) as img:
-            img = img.convert("RGB")
-            buf = BytesIO()
-            img.save(buf, format="PNG")
-            return buf.getvalue()
-    except Exception as e:
-        print(f"[WARN] Failed to load image {image_path}: {e}")
-        return None
+def encode_image_file_to_base64(image_path):
+    image = Image.open(image_path)
+    if image.mode in ('RGBA', 'P', 'LA'):
+        image = image.convert('RGB')
 
+    img_buffer = io.BytesIO()
+    image.save(img_buffer, format="PNG")
+
+    image_data = img_buffer.getvalue()
+    ret = base64.b64encode(image_data).decode('utf-8')
+    return ret
 
 def ensure_list_data_files(data_file_field: Union[str, List[str], None]) -> List[str]:
     """Normalize data_file field to a list of strings."""
@@ -39,7 +41,7 @@ def ensure_list_data_files(data_file_field: Union[str, List[str], None]) -> List
 def build_image_dict(
     images_dir: Path,
     data_files: List[str],
-    cache: Dict[str, Optional[bytes]],
+    cache: Dict[str, Optional[str]],
 ) -> Dict[str, Optional[bytes]]:
     """
     Load all data_files into a dict: view_id -> image bytes.
@@ -49,7 +51,7 @@ def build_image_dict(
     for rel_path in data_files:
         if rel_path not in cache:
             img_path = images_dir / rel_path
-            cache[rel_path] = load_image_bytes(img_path)
+            cache[rel_path] = encode_image_file_to_base64(img_path)
         image_dict[rel_path] = cache[rel_path]
         if cache[rel_path] is None:
             print(f"[WARN] Missing image bytes for {rel_path}")
@@ -340,10 +342,10 @@ def process_annotation_file(
             row = {
                 "meta_source": meta_source,
                 "data_file": data_files,
-                "image": image_dict,
-                "meta_bbox": meta_bbox,
-                "meta_polygon": meta_polygon,
-                "meta_annotation": meta_annotation,
+                "image": json.dumps(image_dict),
+                "meta_bbox": json.dumps(meta_bbox),
+                "meta_polygon": json.dumps(meta_polygon),
+                "meta_annotation": json.dumps(meta_annotation),
                 "question": region.get("question"),
                 "answer": region.get("answer"),
             }
@@ -409,7 +411,11 @@ def collect_and_write_parquet(
         )
 
         print(f"[INFO] Writing chunk {chunk_idx} with {len(df)} rows to {chunk_path}")
-        df.to_parquet(chunk_path, index=False)  # uses pyarrow / fastparquet under the hood
+        df.to_parquet(
+            chunk_path,
+            index=False,
+            compression="zstd"
+        )
 
         buffer = []
         chunk_idx += 1
