@@ -2,9 +2,9 @@ import cv2
 import numpy as np
 import math
 
-from demo.constant import COLOR_DICT
-from vp_bench.common.utils import contrast_color
-from vp_bench.visual_prompts.visual_prompt import VisualPrompt
+from common.constant import COLOR_DICT
+from common.utils import contrast_color
+from visual_prompts.visual_prompt import VisualPrompt
 
 
 class ArrowPrompt(VisualPrompt):

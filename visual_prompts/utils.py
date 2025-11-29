@@ -1,12 +1,12 @@
-from vp_bench.visual_prompts.tag_alphabet import TagAlphabet
-from vp_bench.visual_prompts.arrow_prompt import ArrowPrompt
-from vp_bench.visual_prompts.bbox_prompt import BoundingBoxPrompt
-from vp_bench.visual_prompts.circle_prompt import CirclePrompt
-from vp_bench.visual_prompts.mask_prompt import MaskPrompt
-from vp_bench.visual_prompts.contour_prompt import ContourPrompt
-from vp_bench.visual_prompts.tag_digit import TagDigit
-from vp_bench.visual_prompts.point_prompt import SinglePointPrompt
-from vp_bench.visual_prompts.scribble_prompt import ScribblePrompt
+from visual_prompts.tag_alphabet import TagAlphabet
+from visual_prompts.arrow_prompt import ArrowPrompt
+from visual_prompts.bbox_prompt import BoundingBoxPrompt
+from visual_prompts.circle_prompt import CirclePrompt
+from visual_prompts.mask_prompt import MaskPrompt
+from visual_prompts.contour_prompt import ContourPrompt
+from visual_prompts.tag_digit import TagDigit
+from visual_prompts.point_prompt import SinglePointPrompt
+from visual_prompts.scribble_prompt import ScribblePrompt
 
 
 class PromptManager:

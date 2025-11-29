@@ -1,5 +1,6 @@
 import os
 from abc import ABC, abstractmethod
+from PIL import Image  # Add PIL import
 
 import cv2
 import numpy as np
@@ -26,24 +27,39 @@ class VisualPrompt(ABC):
         Apply the prompt without optional dimming.
         :param colors: List of colors corresponding to each annotation.
         :param thickness: Controls the thickness of the visual prompt visualization ('low', 'medium', 'high').
-        :param image: The image to apply the prompt on.
+        :param image: The image to apply the prompt on (PIL Image or numpy array in BGR format).
         :param annotations: The COCO-style annotations for objects in the image.
         :param image_info: Image metadata.
         :param save_path: If specified, save the resulting image.
+        :return: Visualized image as a PIL Image.
         """
         thickness_value = thickness
 
         if len(colors) < len(annotations):
-            raise ValueError("Length of 'colors' must greater than the number of annotations.", len(colors), len(annotations))
+            raise ValueError("Length of 'colors' must be greater than the number of annotations.",
+                             len(colors), len(annotations))
 
-        image, used_color = self.apply_prompt(image, annotations, image_info, None, colors, thickness_value,
-                          **kwargs)  # Direct drawing on the image
+        # Convert PIL Image to numpy array (BGR format) if needed
+        if isinstance(image, Image.Image):
+            # PIL uses RGB, convert to BGR for OpenCV processing
+            image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+        # Process the image with the prompt
+        image, used_color = self.apply_prompt(
+            image, annotations, image_info, None, colors, thickness_value,** kwargs
+        )
+
+        # Save image if path is provided (uses OpenCV's BGR format)
         if save_path:
-            cv2.imwrite(save_path, image)  # Save the image to the specified path
+            cv2.imwrite(save_path, image)
         else:
             self.display_image('Image', image)
-        return used_color
 
+        # Convert back to PIL Image (RGB format)
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb_image)
+
+    # Rest of the class methods remain unchanged...
     @staticmethod
     def load_image(image_dir, file_name):
         image_file = os.path.join(image_dir, file_name)

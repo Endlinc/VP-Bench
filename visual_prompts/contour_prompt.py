@@ -3,9 +3,9 @@ import numpy as np
 from pycocotools import mask as cocomask
 from scipy.interpolate import splprep, splev
 
-from demo.constant import COLOR_DICT
-from vp_bench.common.utils import contrast_color
-from vp_bench.visual_prompts.visual_prompt import VisualPrompt
+from common.constant import COLOR_DICT
+from common.utils import contrast_color
+from visual_prompts.visual_prompt import VisualPrompt
 
 
 class ContourPrompt(VisualPrompt):
