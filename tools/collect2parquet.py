@@ -6,6 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import numpy as np
 import pandas as pd
 from PIL import Image
 
@@ -362,7 +363,7 @@ def process_annotation_file(
     meta_source = derive_meta_source_from_anno(json_path)
 
     for item in data:
-        data_files = ensure_list_data_files(item.get("original_image"))
+        data_files = ensure_list_data_files(item.get("vp_image"))
         if not data_files:
             print(f"[WARN] No valid data_file in {json_path}")
             continue
@@ -370,74 +371,52 @@ def process_annotation_file(
         # Load all images for this instance
         image_list = build_image_list(images_dir, data_files, image_cache)
 
-        # Two patterns:
-        #  - 'region': emotic / RoomSpace-style
-        #  - 'regions': OpenPSG-style
-        if "region" in item:
-            region_list = item.get("region", [])
-        elif "regions" in item:
-            region_list = item.get("regions", [])
+        bboxs = item.get("answer_bbox")
+        polys = item.get("answer_polygon")
+
+        np_bboxs = np.array(bboxs)
+        if np_bboxs.ndim == 1:
+            bboxs = [bboxs]
+        if len(polys) == 0 or len(polys[0]) == 0:
+            polys = None
+        if polys and not isinstance(polys[0][0], list):
+            polys = [polys]
+
+        # --- Parse concatenated question string into question + A/B/C/D ---
+        q_concat = item.get("question")
+        q_text = None
+        A = B = C = D = None
+
+        if isinstance(q_concat, str):
+            lines = [ln.strip() for ln in q_concat.split("\n")]
+            if len(lines) > 0:
+                q_text = lines[0] or None
+            if len(lines) > 1:
+                A = lines[1] or None
+            if len(lines) > 2:
+                B = lines[2] or None
+            if len(lines) > 3:
+                C = lines[3] or None
+            if len(lines) > 4:
+                D = lines[4] or None
         else:
-            region_list = []
+            # If not a string, keep as-is in question, others stay None
+            q_text = q_concat
 
-        if not isinstance(region_list, list):
-            print(f"[WARN] 'region(s)' not a list in {json_path}")
-            continue
-
-        for region in region_list:
-            # Decide if this is OpenPSG-style (has meta_obj_bbox etc.)
-            is_openpsg = any(
-                key in region
-                for key in ("meta_obj_bbox", "meta_sbj_bbox", "meta_relation_bbox")
-            )
-
-            if is_openpsg:
-                bbox1, poly1, ann1 = normalize_region_openpsg(data_files, region)
-                bbox2, poly2, ann2 = normalize_region_generic(data_files, region)
-                meta_bbox, meta_polygon = merge_nested_bbox_poly(
-                    bbox1, poly1, bbox2, poly2
-                )
-                meta_annotation = {**ann2, **ann1}  # OpenPSG dict precedence
-            else:
-                meta_bbox, meta_polygon, meta_annotation = normalize_region_generic(
-                    data_files, region
-                )
-
-            # --- Parse concatenated question string into question + A/B/C/D ---
-            q_concat = region.get("question")
-            q_text = None
-            A = B = C = D = None
-
-            if isinstance(q_concat, str):
-                lines = [ln.strip() for ln in q_concat.split("\n")]
-                if len(lines) > 0:
-                    q_text = lines[0] or None
-                if len(lines) > 1:
-                    A = lines[1] or None
-                if len(lines) > 2:
-                    B = lines[2] or None
-                if len(lines) > 3:
-                    C = lines[3] or None
-                if len(lines) > 4:
-                    D = lines[4] or None
-            else:
-                # If not a string, keep as-is in question, others stay None
-                q_text = q_concat
-
-            row = {
-                "meta_source": meta_source,
-                "data_file": data_files,
-                "image": image_list,
-                "meta_bbox": meta_bbox,
-                "meta_polygon": meta_polygon,
-                "question": q_text,
-                "A": A,
-                "B": B,
-                "C": C,
-                "D": D,
-                "answer": region.get("answer"),
-            }
-            rows.append(row)
+        row = {
+            "meta_source": meta_source,
+            "data_file": data_files,
+            "image": image_list,
+            "meta_bbox": bboxs,
+            "meta_polygon": polys,
+            "question": q_text,
+            "A": A,
+            "B": B,
+            "C": C,
+            "D": D,
+            "answer": item.get("answer"),
+        }
+        rows.append(row)
 
     return rows
 
