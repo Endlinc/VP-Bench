@@ -2,7 +2,6 @@ import argparse
 import base64
 import io
 import json
-import os
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -10,23 +9,30 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 from PIL import Image
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
 
 # ---------- Image helpers ----------
 
-def encode_image_file_to_base64(image_path):
-    image = Image.open(image_path)
-    if image.mode in ('RGBA', 'P', 'LA'):
-        image = image.convert('RGB')
+def encode_image_file_to_base64(image_path: Path) -> Optional[str]:
+    """
+    Open image and return base64-encoded PNG.
+    Return None and report an error if the image cannot be loaded.
+    """
+    try:
+        image = Image.open(image_path)
+        if image.mode in ("RGBA", "P", "LA"):
+            image = image.convert("RGB")
 
-    img_buffer = io.BytesIO()
-    image.save(img_buffer, format="PNG")
+        img_buffer = io.BytesIO()
+        image.save(img_buffer, format="PNG")
 
-    image_data = img_buffer.getvalue()
-    ret = base64.b64encode(image_data).decode('utf-8')
-    return ret
+        image_data = img_buffer.getvalue()
+        ret = base64.b64encode(image_data).decode("utf-8")
+        return ret
+    except Exception as e:
+        # Report error but do not hard-crash so you can see all bad images
+        print(f"[ERROR] Failed to load image {image_path}: {e}")
+        return None
+
 
 def ensure_list_data_files(data_file_field: Union[str, List[str], None]) -> List[str]:
     """Normalize data_file field to a list of strings."""
@@ -38,45 +44,103 @@ def ensure_list_data_files(data_file_field: Union[str, List[str], None]) -> List
         return []
 
 
-def build_image_dict(
+def build_image_list(
     images_dir: Path,
     data_files: List[str],
     cache: Dict[str, Optional[str]],
-) -> Dict[str, Optional[bytes]]:
+) -> List[Optional[str]]:
     """
-    Load all data_files into a dict: view_id -> image bytes.
+    Load all data_files into a dict: rel_path -> base64 string (or None on error).
+
     Uses a shared cache to avoid re-reading the same file.
     """
-    image_dict: Dict[str, Optional[bytes]] = {}
+    image_list: List[Optional[str]] = []
     for rel_path in data_files:
         if rel_path not in cache:
-            img_path = images_dir / rel_path
-            cache[rel_path] = encode_image_file_to_base64(img_path)
-        image_dict[rel_path] = cache[rel_path]
+            img_path = images_dir / Path("data") / rel_path
+            temp = encode_image_file_to_base64(img_path)
+            cache[rel_path] = temp
+        image_list.append(cache[rel_path])
         if cache[rel_path] is None:
-            print(f"[WARN] Missing image bytes for {rel_path}")
-    return image_dict
+            print(f"[WARN] Missing/failed image bytes for {rel_path}")
+    return image_list
 
 
-def guess_images_dir(json_path: Path) -> Path:
+def guess_images_dir_for_anno(json_path: Path, image_root_dir: Path) -> Path:
     """
-    Heuristic to find images directory for a given JSON:
+    Decide which image sub-folder to use based on the annotation file name/path.
 
-    1) <dataset_root>/images if exists (e.g., EMOTIC/annotations/foo.json → EMOTIC/images)
-    2) <json_dir>/images if exists
-    3) Fallback: json_dir (assume data_file is relative to the JSON itself)
+    Rules (case-insensitive, based on 'anno_file is containing ...'):
+      - if contains 'emotic'           -> image_root_dir / 'EMOTIC-Scaled'
+      - if contains 'mapillary_vistas' -> image_root_dir / 'MapillaryVistas-Scaled'
+      - if contains 'mia'             -> image_root_dir / 'MIA-Scaled'
+      - if contains 'sd-100'          -> image_root_dir / 'SD-100-Scaled'
+      - if contains 'see_click'       -> image_root_dir / 'SeeClick-Scaled'
+      - if contains 'sgg'             -> image_root_dir / 'SceneGraphRcongnition-Scaled'
     """
-    json_dir = json_path.parent
-    dataset_root = json_dir.parent
+    full_str = str(json_path).lower()
 
-    cand1 = dataset_root / "data"
-    cand2 = json_dir / "data"
+    subdir = None
+    if "emotic" in full_str:
+        subdir = "EMOTIC-Scaled"
+    elif "mapillary_vistas" in full_str:
+        subdir = "MapillaryVistas-Scaled"
+    elif "mia" in full_str:
+        subdir = "MIA-Scaled"
+    elif "sd-100" in full_str:
+        subdir = "SD-100-Scaled"
+    elif "see_click" in full_str:
+        subdir = "SeeClick-Scaled"
+    elif "sgg" in full_str:
+        subdir = "SceneGraphRcongnition-Scaled"
 
-    if cand1.is_dir():
-        return cand1
-    if cand2.is_dir():
-        return cand2
-    return json_dir
+    if subdir is not None:
+        images_dir = image_root_dir / subdir
+        if not images_dir.is_dir():
+            raise SystemExit(
+                f"[ERROR] Expected image directory for {json_path} not found: {images_dir}"
+            )
+        return images_dir
+
+    # Fallback if nothing matched
+    print(
+        f"[WARN] Could not infer dataset type from annotation path {json_path}. "
+        f"Using image_root_dir directly: {image_root_dir}"
+    )
+    if not image_root_dir.is_dir():
+        raise SystemExit(f"[ERROR] image_root_dir does not exist: {image_root_dir}")
+    return image_root_dir
+
+
+def derive_meta_source_from_anno(json_path: Path) -> str:
+    """
+    Derive meta_source from the annotation file path.
+
+    Rules (case-insensitive):
+      - if contains 'emotic'           -> 'emotic'
+      - if contains 'mapillary_vistas' -> 'mapillary_vistas'
+      - if contains 'mia'             -> 'MIA'
+      - if contains 'sd-100'          -> 'SD-100'
+      - if contains 'see_click'       -> 'see_click'
+      - if contains 'sgg'             -> 'SGG'
+    """
+    full_str = str(json_path).lower()
+
+    if "emotic" in full_str:
+        return "emotic"
+    if "mapillary_vistas" in full_str:
+        return "mapillary_vistas"
+    if "mia" in full_str:
+        return "MIA"
+    if "sd-100" in full_str:
+        return "SD-100"
+    if "see_click" in full_str:
+        return "see_click"
+    if "sgg" in full_str:
+        return "SGG"
+
+    # fallback if nothing matches
+    return ""
 
 
 # ---------- Region normalization ----------
@@ -154,9 +218,7 @@ def build_meta_annotation(region: Dict[str, Any]) -> Optional[str]:
 def normalize_region_generic(
     data_files: List[str],
     region: Dict[str, Any],
-) -> (Dict[str, Dict[str, List[int]]],
-      Dict[str, Dict[str, List[List[int]]]],
-      Dict[str, str]):
+):
     """
     Handle generic 'meta_bbox' / 'meta_polygon' regions (emotic, RoomSpace).
     """
@@ -203,9 +265,7 @@ def normalize_region_generic(
 def normalize_region_openpsg(
     data_files: List[str],
     region: Dict[str, Any],
-) -> (Dict[str, Dict[str, List[int]]],
-      Dict[str, Dict[str, List[List[int]]]],
-      Dict[str, str]):
+):
     """
     Handle OpenPSG-style regions with meta_obj/sbj/relation_*.
     """
@@ -255,8 +315,7 @@ def merge_nested_bbox_poly(
     a_poly: Dict[str, Dict[str, List[List[int]]]],
     b_bbox: Dict[str, Dict[str, List[int]]],
     b_poly: Dict[str, Dict[str, List[List[int]]]],
-) -> (Dict[str, Dict[str, List[int]]],
-      Dict[str, Dict[str, List[List[int]]]]):
+):
     """
     Merge two nested view->role->value dicts.
     """
@@ -270,15 +329,21 @@ def merge_nested_bbox_poly(
 
     return out_bbox, out_poly
 
+
 # ---------- JSON processing ----------
 
 def process_annotation_file(
     json_path: Path,
-    image_cache: Dict[str, Optional[bytes]],
+    image_root_dir: Path,
+    image_cache: Dict[str, Optional[str]],
 ) -> List[Dict[str, Any]]:
     """
     Read one JSON annotation file and return a list of rows
     in the unified schema (but NOT as a DataFrame yet).
+
+    NOTE: In raw annotation, `question` is a single string:
+        "question\\nA\\nB\\nC\\nD"
+    We parse and store them separately as `question`, `A`, `B`, `C`, `D`.
     """
     rows: List[Dict[str, Any]] = []
 
@@ -293,18 +358,17 @@ def process_annotation_file(
         print(f"[WARN] Top level of {json_path} is not a list.")
         return rows
 
-    images_dir = guess_images_dir(json_path)
+    images_dir = guess_images_dir_for_anno(json_path, image_root_dir)
+    meta_source = derive_meta_source_from_anno(json_path)
 
     for item in data:
-        meta_source = item.get("meta_source", "")
-
-        data_files = ensure_list_data_files(item.get("data_file"))
+        data_files = ensure_list_data_files(item.get("original_image"))
         if not data_files:
             print(f"[WARN] No valid data_file in {json_path}")
             continue
 
         # Load all images for this instance
-        image_dict = build_image_dict(images_dir, data_files, image_cache)
+        image_list = build_image_list(images_dir, data_files, image_cache)
 
         # Two patterns:
         #  - 'region': emotic / RoomSpace-style
@@ -333,20 +397,44 @@ def process_annotation_file(
                 meta_bbox, meta_polygon = merge_nested_bbox_poly(
                     bbox1, poly1, bbox2, poly2
                 )
-                meta_annotation = {**ann2, **ann1}  # give OpenPSG dict precedence
+                meta_annotation = {**ann2, **ann1}  # OpenPSG dict precedence
             else:
                 meta_bbox, meta_polygon, meta_annotation = normalize_region_generic(
                     data_files, region
                 )
 
+            # --- Parse concatenated question string into question + A/B/C/D ---
+            q_concat = region.get("question")
+            q_text = None
+            A = B = C = D = None
+
+            if isinstance(q_concat, str):
+                lines = [ln.strip() for ln in q_concat.split("\n")]
+                if len(lines) > 0:
+                    q_text = lines[0] or None
+                if len(lines) > 1:
+                    A = lines[1] or None
+                if len(lines) > 2:
+                    B = lines[2] or None
+                if len(lines) > 3:
+                    C = lines[3] or None
+                if len(lines) > 4:
+                    D = lines[4] or None
+            else:
+                # If not a string, keep as-is in question, others stay None
+                q_text = q_concat
+
             row = {
                 "meta_source": meta_source,
                 "data_file": data_files,
-                "image": json.dumps(image_dict),
-                "meta_bbox": json.dumps(meta_bbox),
-                "meta_polygon": json.dumps(meta_polygon),
-                "meta_annotation": json.dumps(meta_annotation),
-                "question": region.get("question"),
+                "image": image_list,
+                "meta_bbox": meta_bbox,
+                "meta_polygon": meta_polygon,
+                "question": q_text,
+                "A": A,
+                "B": B,
+                "C": C,
+                "D": D,
                 "answer": region.get("answer"),
             }
             rows.append(row)
@@ -357,12 +445,13 @@ def process_annotation_file(
 # ---------- Chunked collection & Parquet writing ----------
 
 def collect_and_write_parquet(
-    root_dir: Path,
+    anno_dir: Path,
+    image_root_dir: Path,
     output: Path,
     chunk_size: int = 5000,
 ):
     """
-    Recursively walk root_dir, process JSON files, and write chunks
+    Recursively walk anno_dir, process JSON files, and write chunks
     to separate Parquet files using pandas.to_parquet.
 
     If output = /path/to/vp_bench_stage_2_meta.parquet,
@@ -372,14 +461,14 @@ def collect_and_write_parquet(
       ...
     """
     json_files: List[Path] = []
-    for p in root_dir.rglob("*.json"):
+    for p in anno_dir.rglob("*.json"):
         if ".git" in p.parts:
             continue
         json_files.append(p)
 
-    print(f"[INFO] Found {len(json_files)} JSON files under {root_dir}")
+    print(f"[INFO] Found {len(json_files)} JSON files under {anno_dir}")
 
-    image_cache: Dict[str, Optional[bytes]] = {}
+    image_cache: Dict[str, Optional[str]] = {}
     buffer: List[Dict[str, Any]] = []
     chunk_idx: int = 0
 
@@ -389,8 +478,11 @@ def collect_and_write_parquet(
         "image",
         "meta_bbox",
         "meta_polygon",
-        "meta_annotation",
         "question",
+        "A",
+        "B",
+        "C",
+        "D",
         "answer",
     ]
 
@@ -402,9 +494,6 @@ def collect_and_write_parquet(
         df = pd.DataFrame(buffer)
         df = df[cols]  # enforce column order
 
-        # Replace NaN with None so bytes/strings survive cleanly
-        # df = df.where(pd.notnull(df), None)
-
         # Construct chunk filename
         chunk_path = output.with_name(
             f"{output.stem}.part{chunk_idx:04d}{output.suffix}"
@@ -414,7 +503,7 @@ def collect_and_write_parquet(
         df.to_parquet(
             chunk_path,
             index=False,
-            compression="zstd"
+            compression="zstd",
         )
 
         buffer = []
@@ -422,7 +511,7 @@ def collect_and_write_parquet(
 
     for jp in sorted(json_files):
         print(f"[INFO] Processing JSON: {jp}")
-        rows = process_annotation_file(jp, image_cache)
+        rows = process_annotation_file(jp, image_root_dir, image_cache)
         buffer.extend(rows)
         if len(buffer) >= chunk_size:
             flush_buffer()
@@ -436,18 +525,28 @@ def collect_and_write_parquet(
     else:
         print(f"[INFO] Finished writing {chunk_idx} chunk file(s).")
 
-# ---------- CLI ----------
 
+# ---------- CLI ----------
 
 def main():
     parser = argparse.ArgumentParser(
         description="Collect VP metadata into multiple chunked Parquet files."
     )
     parser.add_argument(
-        "--root_dir",
+        "--anno_dir",
         required=True,
         type=str,
-        help="Root directory containing metadata JSONs (e.g., /home/ming/Datasets/VP-METADATA).",
+        help="Directory containing annotation JSONs.",
+    )
+    parser.add_argument(
+        "--image_root_dir",
+        required=True,
+        type=str,
+        help=(
+            "Root directory where images are stored in subfolders like "
+            "EMOTIC-Scaled, MapillaryVistas-Scaled, MIA-Scaled, SD-100-Scaled, "
+            "SeeClick-Scaled, SceneGraphRcongnition-Scaled."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -466,13 +565,21 @@ def main():
     )
     args = parser.parse_args()
 
-    root_dir = Path(args.root_dir).expanduser().resolve()
+    anno_dir = Path(args.anno_dir).expanduser().resolve()
+    image_root_dir = Path(args.image_root_dir).expanduser().resolve()
     output = Path(args.output).expanduser().resolve()
 
-    if not root_dir.is_dir():
-        raise SystemExit(f"Root dir does not exist: {root_dir}")
+    if not anno_dir.is_dir():
+        raise SystemExit(f"Annotation dir does not exist: {anno_dir}")
+    if not image_root_dir.is_dir():
+        raise SystemExit(f"image_root_dir does not exist: {image_root_dir}")
 
-    collect_and_write_parquet(root_dir, output, chunk_size=args.chunk_size)
+    collect_and_write_parquet(
+        anno_dir=anno_dir,
+        image_root_dir=image_root_dir,
+        output=output,
+        chunk_size=args.chunk_size,
+    )
 
 
 if __name__ == "__main__":
