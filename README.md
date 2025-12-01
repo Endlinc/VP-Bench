@@ -1,5 +1,9 @@
 # VP-Bench: A Comprehensive Benchmark for Visual Prompting in Multimodal Large Language Models
 
+<p align="center">
+        &nbsp&nbsp🤗 <a href="">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp🤖 <a href="https://modelscope.cn/organization/VP-Bench">ModelScope</a>&nbsp&nbsp | &nbsp&nbsp📑 <a href="https://arxiv.org/pdf/2511.11438">Paper</a>&nbsp&nbsp
+</p>
+
 ---
 
 ![VP-Bench Dataset Overview](./assets/dataset-overview.png)
